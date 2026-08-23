@@ -408,6 +408,12 @@ func (c *KlusterletManifestsConfig) Generate(ctx context.Context,
 		c.chartConfig.Klusterlet.WorkConfiguration.StatusSyncInterval = c.klusterletConfig.Spec.WorkStatusSyncInterval
 	}
 
+	// Non-OpenShift clusters lack SCC webhook to inject runAsUser; set explicitly to avoid runAsNonRoot conflict.
+	if !isManagedClusterOpenShift(c.managedCluster) {
+		defaultUID := int64(10001)
+		c.chartConfig.SecurityContext.RunAsUser = &defaultUID
+	}
+
 	valuesBytes, err := yaml.Marshal(c.chartConfig)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to marshal chart config: %w", err)

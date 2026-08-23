@@ -1629,6 +1629,92 @@ func TestBuildGRPCConfigData(t *testing.T) {
 	}
 }
 
+func TestSecurityContextRunAsUser(t *testing.T) {
+	testcases := []struct {
+		name            string
+		managedCluster  *v1.ManagedCluster
+		expectRunAsUser bool
+		expectedUID     int64
+	}{
+		{
+			name: "non-OpenShift cluster gets runAsUser 10001",
+			managedCluster: &v1.ManagedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-eks",
+					Labels: map[string]string{"vendor": "EKS"},
+				},
+			},
+			expectRunAsUser: true,
+			expectedUID:     10001,
+		},
+		{
+			name: "OpenShift cluster does not get runAsUser",
+			managedCluster: &v1.ManagedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-ocp",
+					Labels: map[string]string{"vendor": "OpenShift"},
+				},
+			},
+			expectRunAsUser: false,
+		},
+		{
+			name:            "nil managed cluster defaults to setting runAsUser",
+			managedCluster:  nil,
+			expectRunAsUser: true,
+			expectedUID:     10001,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			kubeClient := kubefake.NewSimpleClientset()
+			clientHolder := &helpers.ClientHolder{
+				KubeClient: kubeClient,
+				RuntimeClient: fake.NewClientBuilder().WithScheme(testscheme).WithObjects(
+					&corev1.Namespace{
+						ObjectMeta: metav1.ObjectMeta{Name: "test"},
+					},
+				).Build(),
+				ImageRegistryClient: imageregistry.NewClient(kubeClient),
+			}
+
+			config := NewKlusterletManifestsConfig(
+				operatorv1.InstallModeDefault,
+				"test",
+				[]byte("bootstrap kubeconfig"),
+			).WithoutImagePullSecretGenerate()
+
+			if tc.managedCluster != nil {
+				config = config.WithManagedCluster(tc.managedCluster)
+			}
+
+			_, _, valuesBytes, err := config.Generate(context.Background(), clientHolder)
+			if err != nil {
+				t.Fatalf("Failed to generate klusterlet manifests: %v", err)
+			}
+
+			chartConfig := &chart.KlusterletChartConfig{}
+			if err := yaml.Unmarshal(valuesBytes, chartConfig); err != nil {
+				t.Fatalf("Failed to unmarshal values: %v", err)
+			}
+
+			if tc.expectRunAsUser {
+				if chartConfig.SecurityContext.RunAsUser == nil {
+					t.Errorf("expected SecurityContext.RunAsUser to be %d, but got nil", tc.expectedUID)
+				} else if *chartConfig.SecurityContext.RunAsUser != tc.expectedUID {
+					t.Errorf("expected SecurityContext.RunAsUser to be %d, but got %d",
+						tc.expectedUID, *chartConfig.SecurityContext.RunAsUser)
+				}
+			} else {
+				if chartConfig.SecurityContext.RunAsUser != nil {
+					t.Errorf("expected SecurityContext.RunAsUser to be nil for OpenShift, but got %d",
+						*chartConfig.SecurityContext.RunAsUser)
+				}
+			}
+		})
+	}
+}
+
 func TestGetGRCPCaBundleFromConfigMap(t *testing.T) {
 	testcases := []struct {
 		name            string
